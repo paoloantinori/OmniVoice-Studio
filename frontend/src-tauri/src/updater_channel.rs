@@ -30,6 +30,22 @@ fn channel_endpoints(channel: &str) -> Vec<tauri::Url> {
     raw.iter().filter_map(|u| u.parse().ok()).collect()
 }
 
+/// Update-availability predicate for a channel.
+///
+/// Stable keeps the plugin's default strict-semver `remote > current`. Preview
+/// builds are versioned as pre-releases of the *current* stable base (e.g.
+/// `0.3.5-41`), and semver orders a pre-release *below* its release — so once
+/// stable catches up, the default comparator tells preview users they are
+/// already up to date forever (#326). Preview is a rolling channel: any
+/// manifest version that differs from the running one is an update.
+fn update_available(channel: &str, current: &semver::Version, remote: &semver::Version) -> bool {
+    if channel == "preview" {
+        remote != current
+    } else {
+        remote > current
+    }
+}
+
 #[derive(Serialize, Clone)]
 pub struct UpdateMeta {
     pub version: String,
@@ -50,8 +66,12 @@ pub async fn check_update(
     app: AppHandle,
     channel: String,
 ) -> Result<Option<UpdateMeta>, String> {
+    let ch = channel.clone();
     let updater = app
         .updater_builder()
+        .version_comparator(move |current, release| {
+            update_available(&ch, &current, &release.version)
+        })
         .endpoints(channel_endpoints(&channel))
         .map_err(|e| format!("updater endpoints: {e}"))?
         .build()
@@ -73,8 +93,12 @@ pub async fn check_update(
 /// side, exactly as the badge flow already does.
 #[tauri::command]
 pub async fn install_update(app: AppHandle, channel: String) -> Result<(), String> {
+    let ch = channel.clone();
     let updater = app
         .updater_builder()
+        .version_comparator(move |current, release| {
+            update_available(&ch, &current, &release.version)
+        })
         .endpoints(channel_endpoints(&channel))
         .map_err(|e| format!("updater endpoints: {e}"))?
         .build()
@@ -163,4 +187,42 @@ pub async fn list_releases(_channel: String) -> Result<Vec<ReleaseInfo>, String>
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::update_available;
+    use semver::Version;
+
+    fn v(s: &str) -> Version {
+        Version::parse(s).unwrap()
+    }
+
+    #[test]
+    fn stable_keeps_strict_semver_ordering() {
+        assert!(update_available("stable", &v("0.3.4"), &v("0.3.5")));
+        assert!(!update_available("stable", &v("0.3.5"), &v("0.3.5")));
+        // A pre-release of the running version is NOT an update on stable.
+        assert!(!update_available("stable", &v("0.3.5"), &v("0.3.5-41")));
+        assert!(!update_available("stable", &v("0.3.5"), &v("0.3.4")));
+    }
+
+    #[test]
+    fn preview_offers_rolling_builds_of_the_same_base() {
+        // The #326 regression: stable 0.3.5 user switches to preview while the
+        // rolling manifest advertises a pre-release of the same base version.
+        assert!(update_available("preview", &v("0.3.5"), &v("0.3.5-41")));
+        // Newer rolling build for an existing preview user.
+        assert!(update_available("preview", &v("0.3.5-40"), &v("0.3.5-41")));
+        // Already on the advertised build → up to date.
+        assert!(!update_available("preview", &v("0.3.5-41"), &v("0.3.5-41")));
+        // Plain newer versions still count, e.g. stable-manifest fallback.
+        assert!(update_available("preview", &v("0.3.5-41"), &v("0.3.6")));
+    }
+
+    #[test]
+    fn unknown_channel_behaves_like_stable() {
+        assert!(!update_available("nightly", &v("0.3.5"), &v("0.3.5-41")));
+        assert!(update_available("nightly", &v("0.3.4"), &v("0.3.5")));
+    }
 }

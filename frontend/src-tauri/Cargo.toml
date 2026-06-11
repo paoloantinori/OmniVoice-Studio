@@ -24,6 +24,9 @@ tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2.0.0"
 tauri-plugin-updater = "2"
+# Channel-aware update comparator (preview is a rolling channel; see
+# updater_channel.rs). Same semver crate tauri-plugin-updater uses internally.
+semver = "1"
 tauri-plugin-process = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
